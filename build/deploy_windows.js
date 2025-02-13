@@ -12,55 +12,82 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const readline = require('readline');
 
 // ---------------------------------------------------------------------
 // Project/Layout Configuration
 // ---------------------------------------------------------------------
-const ARCH = process.argv.includes('--x86') ? 'x86' : 'x64';
 const SOURCE_DIR = path.resolve(__dirname, '..');
-const BUILD_DIR = path.join(SOURCE_DIR, `cmake-build-release-${ARCH}`);
-const DIST_DIR = path.join(SOURCE_DIR, 'dist', `win-${ARCH}`);
-const CONFIG_DIR = path.join(SOURCE_DIR, 'dist', `win-${ARCH}`, 'portable_config');
+const BUILD_DIR = path.join(SOURCE_DIR, 'cmake-build-release');
+const DIST_DIR = path.join(SOURCE_DIR, 'dist', 'win');
 const PROJECT_NAME = 'stremio';
 
 // Paths to Additional Dependencies
-const MPV_DLL = ARCH === 'x86'
-    ? path.join(SOURCE_DIR, 'deps', 'libmpv', 'i686', 'libmpv-2.dll')
-    : path.join(SOURCE_DIR, 'deps', 'libmpv', 'x86_64', 'libmpv-2.dll');
+const MPV_DLL = path.join(SOURCE_DIR, 'deps', 'libmpv', 'x86_64', 'libmpv-2.dll');
 const SERVER_JS = path.join(SOURCE_DIR, 'utils', 'windows', 'server.js');
+const NODE_EXE = path.join(SOURCE_DIR, 'utils', 'windows', 'node.exe');
+const DS_FOLDER = path.join(SOURCE_DIR, 'utils', 'windows', 'DS');
 const STREMIO_RUNTIME_EXE = path.join(SOURCE_DIR, 'utils', 'windows', 'stremio-runtime.exe');
 const FFMPEG_FOLDER = path.join(SOURCE_DIR, 'utils', 'windows', 'ffmpeg');
 const MPV_FOLDER = path.join(SOURCE_DIR, 'utils', 'mpv', 'anime4k');
-const DEFAULT_SETTINGS_FOLDER = path.join(SOURCE_DIR, 'utils', 'stremio');
 
 // Default Paths
+const DEFAULT_OPENSSL_BIN = 'C:\\Program Files\\OpenSSL-Win64\\bin';
+const DEFAULT_QT_BIN = 'C:\\Qt\\6.8.1\\msvc2022_64\\bin';
 const DEFAULT_NSIS = 'C:\\Program Files (x86)\\NSIS\\makensis.exe';
-//VCPKG
-const VCPKG_TRIPLET = ARCH === 'x86' ? 'x86-windows-static' : 'x64-windows-static';
-const VCPKG_CMAKE = 'C:/bin/vcpkg/scripts/buildsystems/vcpkg.cmake';
 
 // ---------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------
 (async function main() {
     try {
-        console.log(`\n=== Building for ${ARCH.toUpperCase()} ===`);
         const args = process.argv.slice(2);
         const buildInstaller = args.includes('--installer');
-        const buildPortable = args.includes('--portable');
-        const debugBuild = args.includes('--debug');
+
+        // 1) Check or ask for OpenSSL path
+        let sslBinDir = DEFAULT_OPENSSL_BIN;
+        if (!fs.existsSync(sslBinDir)) {
+            console.log(`Default OpenSSL bin not found at: ${sslBinDir}`);
+            sslBinDir = await askQuestion(
+                'Enter path to OpenSSL bin (e.g., C:\\Program Files\\OpenSSL-Win64\\bin): '
+            );
+            if (!fs.existsSync(sslBinDir)) {
+                console.error(`Error: No valid OpenSSL bin dir at: ${sslBinDir}`);
+                process.exit(1);
+            }
+        }
+        console.log(`Using OpenSSL bin: ${sslBinDir}\n`);
+
+        // 2) Locate windeployqt.exe
+        let windeployqtPath = findInPath('windeployqt.exe');
+        if (!windeployqtPath) {
+            const defaultWindeployqt = path.join(DEFAULT_QT_BIN, 'windeployqt.exe');
+            if (fs.existsSync(defaultWindeployqt)) {
+                windeployqtPath = defaultWindeployqt;
+                console.log(`Found windeployqt.exe at default path: ${windeployqtPath}`);
+            } else {
+                const promptQtBin = await askQuestion(
+                    'Enter path to Qt bin (e.g. C:\\Qt\\6.8.1\\msvc2022_64\\bin): '
+                );
+                const possibleQtExe = path.join(promptQtBin, 'windeployqt.exe');
+                if (!fs.existsSync(possibleQtExe)) {
+                    console.error('Error: windeployqt.exe not found at that location.');
+                    process.exit(1);
+                }
+                windeployqtPath = possibleQtExe;
+            }
+        } else {
+            console.log(`Found windeployqt.exe in PATH: ${windeployqtPath}`);
+        }
 
         // 3) Run CMake + Ninja in ../cmake-build-release (64-bit)
         if (!fs.existsSync(BUILD_DIR)) {
             fs.mkdirSync(BUILD_DIR, { recursive: true });
         }
-
         console.log('\n=== Running CMake in cmake-build-release ===');
         process.chdir(BUILD_DIR);
-        execSync(
-            `cmake -G Ninja -DCMAKE_BUILD_TYPE=${debugBuild ? "Debug" : "Release"} -DCMAKE_TOOLCHAIN_FILE=${VCPKG_CMAKE} -DVCPKG_TARGET_TRIPLET=${VCPKG_TRIPLET} ..`,
-            { stdio: 'inherit' }
-        );
+        execSync(`cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..`, { stdio: 'inherit' });
+
         console.log('=== Running Ninja in cmake-build-release ===');
         execSync('ninja', { stdio: 'inherit' });
 
@@ -80,16 +107,25 @@ const VCPKG_CMAKE = 'C:/bin/vcpkg/scripts/buildsystems/vcpkg.cmake';
         // 6) Copy mpv DLL, server.js, node.exe
         copyFile(MPV_DLL, path.join(DIST_DIR, path.basename(MPV_DLL)));
         copyFile(SERVER_JS, path.join(DIST_DIR, path.basename(SERVER_JS)));
+        copyFile(NODE_EXE, path.join(DIST_DIR, 'node.exe'));
 
+        // 7) Copy OpenSSL DLLs
+        console.log('Copying OpenSSL DLLs...');
+        const dllList = ['libcrypto-3-x64.dll', 'libssl-3-x64.dll'];
+        for (const dll of dllList) {
+            copyFile(path.join(sslBinDir, dll), path.join(DIST_DIR, dll));
+        }
 
-
-
-        // 8) Flatten stremio-runtime, ffmpeg
+        // 8) Flatten DS folder, stremio-runtime, ffmpeg
         console.log('Flattening DS folder, stremio-runtime, ffmpeg...');
+        copyFolderContents(DS_FOLDER, DIST_DIR);
         copyFile(STREMIO_RUNTIME_EXE, path.join(DIST_DIR, 'stremio-runtime.exe'));
         copyFolderContents(FFMPEG_FOLDER, DIST_DIR);
         copyFolderContentsPreservingStructure(MPV_FOLDER, DIST_DIR);
-        copyFolderContentsPreservingStructure(DEFAULT_SETTINGS_FOLDER, CONFIG_DIR);
+
+        // 9) Run windeployqt.exe
+        console.log('\n=== Deploying Qt dependencies ===');
+        execSync(`"${windeployqtPath}" --qmldir "${SOURCE_DIR}" "${distExe}"`, { stdio: 'inherit' });
 
         console.log('\n=== dist\\win preparation complete. ===');
 
@@ -101,11 +137,7 @@ const VCPKG_CMAKE = 'C:/bin/vcpkg/scripts/buildsystems/vcpkg.cmake';
             process.env.package_version = version;
             console.log(`Set package_version to: ${version}`);
             buildNsisInstaller();
-        } else if (buildPortable) {
-            console.log('\n--portable detected: building Portable...');
-            buildPortableZip();
         }
-
 
         console.log('\nAll done!');
     } catch (err) {
@@ -117,6 +149,16 @@ const VCPKG_CMAKE = 'C:/bin/vcpkg/scripts/buildsystems/vcpkg.cmake';
 /****************************************************************************
  * Helper Functions
  ****************************************************************************/
+
+function askQuestion(prompt) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise(resolve => {
+        rl.question(prompt, answer => {
+            rl.close();
+            resolve(answer.trim());
+        });
+    });
+}
 
 function safeRemove(dirPath) {
     if (fs.existsSync(dirPath)) {
@@ -192,11 +234,21 @@ function copyFolderContentsPreservingStructure(src, dest) {
             // Recursively copy subdirectories
             copyFolderContentsPreservingStructure(srcItem, destItem);
         } else {
-            if (!srcItem.endsWith('zip') && !srcItem.endsWith('7z')) {
-                // Copy files
-                copyFile(srcItem, destItem);
-            }
+            // Copy files
+            copyFile(srcItem, destItem);
         }
+    }
+}
+
+/**
+ * Attempt to find an executable in PATH on Windows.
+ */
+function findInPath(executable) {
+    try {
+        const result = execSync(`where ${executable}`, { stdio: ['pipe', 'pipe', 'ignore'] });
+        return result.toString().split(/\r?\n/)[0].trim();
+    } catch {
+        return null;
     }
 }
 
@@ -224,79 +276,11 @@ function buildNsisInstaller() {
         return;
     }
     try {
-        const arch = process.argv.includes('--x86') ? 'x86' : 'x64'; // Determine architecture
-        const distSubfolder = `win-${arch}`;
-
-        const distFolder = path.join(SOURCE_DIR, 'dist', distSubfolder);
-        if (!fs.existsSync(distFolder)) {
-            console.error(`Error: Distribution folder does not exist: ${distFolder}`);
-            process.exit(1);
-        }
-
-
         const nsiScript = path.join(SOURCE_DIR, 'utils', 'windows', 'installer', 'windows-installer.nsi');
         console.log(`Running makensis.exe with version: ${process.env.package_version} ...`);
-        process.env.arch = arch;
         execSync(`"${DEFAULT_NSIS}" "${nsiScript}"`, { stdio: 'inherit' });
         console.log(`\nInstaller created: "Stremio ${process.env.package_version}.exe"`);
     } catch (err) {
         console.error('Failed to run NSIS (makensis.exe):', err);
-    }
-}
-
-function buildPortableZip() {
-    const version = getPackageVersionFromCMake();
-    const portableOutput = path.join(SOURCE_DIR, 'utils', `Stremio ${version}-${ARCH}.7z`);
-    const fixedEdgeWebView = path.join(SOURCE_DIR, 'utils', 'windows', 'WebviewRuntime', ARCH);
-    const portable_config = path.join(DIST_DIR, 'portable_config');
-    const distContents = DIST_DIR; // Path to dist directory contents
-
-    console.log(`\nCreating Portable ZIP: ${portableOutput}`);
-
-    // Common 7-Zip paths
-    const common7zPaths = [
-        'C:\\Program Files\\7-Zip\\7z.exe',
-        'C:\\Program Files (x86)\\7-Zip\\7z.exe'
-    ];
-
-    // Find 7-Zip executable
-    const sevenZipPath = common7zPaths.find(fs.existsSync);
-    if (!sevenZipPath) {
-        console.error('Error: 7-Zip executable not found in common paths.');
-        console.error('Please install 7-Zip and ensure it is in one of the following paths:');
-        console.error(common7zPaths.join('\n'));
-        process.exit(1);
-    }
-
-    console.log(`Using 7-Zip at: ${sevenZipPath}`);
-
-    // Ensure the DIST_DIR exists
-    if (!fs.existsSync(DIST_DIR)) {
-        console.error(`Error: DIST_DIR does not exist: ${DIST_DIR}`);
-        process.exit(1);
-    }
-
-    copyFolderContentsPreservingStructure(fixedEdgeWebView, portable_config);
-
-    // Command to create the 7z archive
-    const zipCommand = `"${sevenZipPath}" a -t7z -mx=9 "${portableOutput}" "${distContents}\\*"`;
-
-    try {
-        // Run the 7-Zip command
-        console.log(`Running: ${zipCommand}`);
-        execSync(zipCommand, { stdio: 'inherit' });
-        console.log(`\nPortable ZIP created: ${portableOutput}`);
-        //Clean UP
-        const portableConfigWebView = path.join(DIST_DIR, 'portable_config', 'EdgeWebView');
-        if (fs.existsSync(portableConfigWebView)) {
-            console.log(`\nCleaning up: ${portableConfigWebView}`);
-            fs.rmSync(portableConfigWebView, { recursive: true, force: true });
-            console.log(`Removed: ${portableConfigWebView}`);
-        } else {
-            console.log(`\nNo cleanup needed: ${portableConfigWebView} does not exist.`);
-        }
-    } catch (error) {
-        console.error('Error creating the Portable ZIP:', error);
-        process.exit(1);
     }
 }

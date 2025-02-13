@@ -25,7 +25,7 @@ const os = require('os');
 // Configuration
 const GITHUB_API_URL = 'https://api.github.com/repos/the-database/mpv-upscale-2x_animejanai/releases/latest';
 const TEMP_DIR = path.join(os.tmpdir(), 'animejanai_build_temp');
-const OUTPUT_DIR = path.resolve(__dirname, '..', 'utils', 'mpv', 'stremio-animejanai');
+const OUTPUT_DIR = path.resolve(__dirname, '..', 'utils', 'mpv');
 const OUTPUT_FILENAME_TEMPLATE = 'stremio-animejanai-{version}.7z';
 
 // Files and directories to delete

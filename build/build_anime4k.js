@@ -24,9 +24,9 @@ const os = require('os');
 // Configuration
 const BLOC97_API_URL = 'https://api.github.com/repos/bloc97/Anime4K/releases/latest';
 const TEMP_DIR = path.join(os.tmpdir(), 'anime4k_build_temp');
-const OUTPUT_DIR = path.resolve(__dirname, '..', 'utils', 'mpv', 'anime4k');
+const OUTPUT_DIR = path.resolve(__dirname, '..', 'utils', 'mpv');
 const OUTPUT_ZIP_NAME = 'anime4k-High-end.zip';
-const EXTRACTION_DIR = path.join(OUTPUT_DIR, 'portable_config');
+const EXTRACTION_DIR = path.join(OUTPUT_DIR, 'anime4k', 'portable_config');
 
 // Common 7z.exe installation paths on Windows
 const COMMON_7Z_PATHS = [
